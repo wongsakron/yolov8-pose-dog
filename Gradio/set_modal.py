@@ -15,7 +15,7 @@ MIN_KP_CONF_DEFAULT = 0.30  # = 30%
 BG_PADDING = 3
 CIRCLE_RADIUS = 2
 
-# ===== ฟอนต์ไทย (แก้ให้ชี้ฟอนต์ที่มีในเครื่องได้) =====
+# ===== ฟอนต์ไทย (เลือกฟอนต์ที่มีในเครื่อง) =====
 FONT_PATH_CANDIDATES = [
     r"C:\Windows\Fonts\angsana.ttc",
     r"C:\Windows\Fonts\angsanau.ttf",
