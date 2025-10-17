@@ -1,5 +1,5 @@
 # app.py
-import os, csv, time
+import os, csv, time, shutil, subprocess
 import uuid
 import cv2
 import numpy as np
@@ -11,15 +11,59 @@ from set_modal import (
     MIN_KP_CONF_DEFAULT
 )
 
-def _abs(p):
-    return os.path.abspath(p) if p else p
+# ---------------- Utility ----------------
+def _get_video_path(video):
+    """ดึง path จริงของไฟล์วิดีโอจากอินพุต Gradio (รองรับหลายรูปแบบ)"""
+    if video is None:
+        return None
+    if isinstance(video, str):
+        return video if os.path.exists(video) else None
+    if isinstance(video, dict):
+        for k in ("path", "name", "tempfile", "file"):
+            p = video.get(k)
+            if isinstance(p, str) and os.path.exists(p):
+                return p
+    for attr in ("name", "path"):
+        p = getattr(video, attr, None)
+        if isinstance(p, str) and os.path.exists(p):
+            return p
+    return None
 
-# ========== UI: ภาพนิ่ง ==========
+def _has_ffmpeg():
+    return shutil.which("ffmpeg") is not None
+
+def _ffmpeg_h264_writer(out_stub, fps, width, height):
+    """สร้างไฟล์ MP4 ด้วย H.264 ที่เล่นได้บนเบราว์เซอร์"""
+    fps = max(1.0, float(fps))
+    out_mp4 = out_stub + ".mp4"
+    # บังคับให้กว้าง/สูงเป็นเลขคู่และใช้ yuv420p เพื่อความเข้ากันได้
+    vf = "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}",
+        "-r", f"{fps}",
+        "-i", "-",
+        "-an",
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p",
+        out_mp4
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    return proc, proc.stdin, out_mp4
+
+
+# ---------------- App (UI แบบเวอร์ชันแรก + วิดีโอมีเอาต์พุตเดียว) ----------------
 with gr.Blocks(title="Dog Pose (Thai Labels) – YOLO + Gradio") as app:
     gr.Markdown("## 🐶 Dog Pose Estimation (Thai Labels)\nอัปโหลดภาพหมาหรือวิดีโอ แล้วระบบจะทำนาย keypoints พร้อมป้ายชื่อภาษาไทย")
 
     history = gr.State([])
 
+    # ========== UI: ภาพนิ่ง ==========
     with gr.Tab("ภาพนิ่ง"):
         with gr.Row():
             inp = gr.Image(type="pil", label="อัปโหลดภาพ", container=True)
@@ -50,17 +94,14 @@ with gr.Blocks(title="Dog Pose (Thai Labels) – YOLO + Gradio") as app:
                 hist = (hist or []) + [out_np]
                 if len(hist) > 30:
                     hist = hist[-30:]
-            # Gradio v5: ใช้ gr.update แทน gallery.update(...)
             return out_np, gr.update(value=hist), hist
 
-        # ปุ่มทำนายภาพนิ่ง
         run_btn.click(
             fn=predict_and_store,
             inputs=[inp, conf, show_index, history],
             outputs=[out_img, gallery, history],
         )
 
-        # อัปโหลดไฟล์ภาพแล้วรันทันที
         inp.upload(
             fn=predict_and_store,
             inputs=[inp, conf, show_index, history],
@@ -72,7 +113,7 @@ with gr.Blocks(title="Dog Pose (Thai Labels) – YOLO + Gradio") as app:
         with gr.Row():
             in_vid = gr.Video(label="อัปโหลดวิดีโอ", sources=["upload"], interactive=True)
             out_vid = gr.Video(
-                label="วิดีโอผลลัพธ์ (ทำนายทั้งคลิป)",
+                label="วิดีโอผลลัพธ์ (ทำนายทั้งคลิป, MP4/H.264)",
                 interactive=False,
                 autoplay=True,
                 show_download_button=True,
@@ -82,133 +123,75 @@ with gr.Blocks(title="Dog Pose (Thai Labels) – YOLO + Gradio") as app:
             conf_v = gr.Slider(0.1, 0.95, value=0.5, step=0.05, label="ค่าความมั่นใจขั้นต่ำ (conf)")
             show_index_v = gr.Checkbox(value=False, label="โชว์เลขดัชนี (0–25) ข้างชื่อจุด")
             frame_stride = gr.Slider(1, 8, value=1, step=1, label="ข้ามเฟรม (frame_stride)")
-            save_csv = gr.Checkbox(value=False, label="บันทึก CSV ค่าจุด (ต่อเฟรม)")
 
-        csv_download = gr.File(label="ดาวน์โหลด CSV (ถ้าเลือกบันทึก)")
-        processing = gr.State(value=False)  # กันกดซ้ำ
+        # ❗ ไม่มีเอาต์พุตอื่นแล้ว (เหลือเพียง out_vid ตัวเดียว)
+        def predict_video(video, conf, show_idx, stride, progress=gr.Progress()):
+            # ถ้าไม่มี ffmpeg ให้ไม่คืนไฟล์ (หลีกเลี่ยงส่งข้อความผิดชนิดเข้า gr.Video)
+            if not _has_ffmpeg():
+                return gr.update()
 
-        def _get_video_path(video):
-            """ดึง path จริงของไฟล์วิดีโอจากอินพุต Gradio (รองรับหลายรูปแบบ)"""
-            if video is None:
-                return None
-            if isinstance(video, str):
-                return video if os.path.exists(video) else None
-            if isinstance(video, dict):
-                for k in ("path", "name", "tempfile", "file"):
-                    p = video.get(k)
-                    if isinstance(p, str) and os.path.exists(p):
-                        return p
-            for attr in ("name", "path"):
-                p = getattr(video, attr, None)
-                if isinstance(p, str) and os.path.exists(p):
-                    return p
-            return None
+            vpath = _get_video_path(video)
+            if not vpath or (not os.path.exists(vpath)):
+                return gr.update()
 
-        def predict_video(video, conf, show_idx, stride, want_csv, is_busy, progress=gr.Progress()):
-                if is_busy:
-                    return gr.update(), None, True
-                is_busy = True
+            cap = cv2.VideoCapture(vpath)
+            if not cap.isOpened():
+                return gr.update()
 
-                # --- ดึง path ไฟล์จาก Gradio ---
-                def _get_video_path(v):
-                    if v is None: return None
-                    if isinstance(v, str): return v if os.path.exists(v) else None
-                    if isinstance(v, dict):
-                        for k in ("path", "name", "tempfile", "file"):
-                            p = v.get(k)
-                            if isinstance(p, str) and os.path.exists(p):
-                                return p
-                    for attr in ("name", "path"):
-                        p = getattr(v, attr, None)
-                        if isinstance(p, str) and os.path.exists(p):
-                            return p
-                    return None
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
-                vpath = _get_video_path(video)
-                if not vpath:
-                    return gr.update(), None, False
+            base = os.path.splitext(os.path.basename(vpath))[0]
+            uid = uuid.uuid4().hex[:8]
+            out_stub = os.path.abspath(f"{base}_pred_{uid}")
 
-                cap = cv2.VideoCapture(vpath)
-                if not cap.isOpened():
-                    return gr.update(), None, False
+            # เปิดตัวเขียน H.264 (stdin raw RGB -> ffmpeg)
+            ff_proc, ff_stdin, out_path = _ffmpeg_h264_writer(
+                out_stub, max(1.0, float(fps) / max(1, int(stride))), W, H
+            )
 
-                fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-                W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            frame_idx = 0
+            iterable = range(total) if total > 0 else range(10**9)
+            for _ in progress.tqdm(iterable, desc="วิเคราะห์วิดีโอ (สร้าง MP4/H.264)"):
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-                base = os.path.splitext(os.path.basename(vpath))[0]
-                uid = uuid.uuid4().hex[:8]
-
-                # ✅ เลี่ยง H.264 (ต้องมี openh264) → ใช้ mp4v ก่อน, ไม่ได้ค่อย XVID
-                codec_candidates = [
-                    ("mp4v", f"{base}_pred_{uid}.mp4"),
-                    ("XVID", f"{base}_pred_{uid}.avi"),
-                ]
-
-                writer = None
-                out_video_path = None
-                for fourcc_name, filename in codec_candidates:
-                    fourcc = cv2.VideoWriter_fourcc(*fourcc_name)
-                    tmp_path = os.path.abspath(filename)
-                    w = cv2.VideoWriter(tmp_path, fourcc, max(1.0, fps / max(1, stride)), (W, H))
-                    if w.isOpened():
-                        writer = w
-                        out_video_path = tmp_path
-                        break
-                if writer is None:
-                    cap.release()
-                    return gr.update(), None, False
-
-                out_csv_path = os.path.abspath(f"{base}_pred_{uid}.csv") if want_csv else None
-                csv_file = None
-                csv_writer = None
-                if want_csv:
-                    csv_file = open(out_csv_path, "w", newline="", encoding="utf-8")
-                    csv_writer = csv.writer(csv_file)
-                    csv_writer.writerow(["frame_idx", "person", "kp_idx", "kp_name_th", "x", "y", "conf"])
-
-                frame_idx = 0
-                iterable = range(total) if total > 0 else range(10**9)
-                for _ in progress.tqdm(iterable, desc="วิเคราะห์วิดีโอ"):
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-
-                    if stride > 1 and (frame_idx % stride != 0):
-                        frame_idx += 1
-                        continue
-
-                    plotted_bgr, rows = infer_frame_bgr(frame, conf, show_idx, MIN_KP_CONF_DEFAULT)
-                    writer.write(plotted_bgr)
-
-                    if csv_writer and rows:
-                        for r in rows:
-                            csv_writer.writerow([frame_idx] + r)
-
+                if stride > 1 and (frame_idx % stride != 0):
                     frame_idx += 1
-                    if total == 0 and frame_idx > 2000:
-                        break
+                    continue
 
-                cap.release()
-                writer.release()
-                if csv_file:
-                    csv_file.close()
+                plotted_bgr, _rows = infer_frame_bgr(frame, conf, show_idx, MIN_KP_CONF_DEFAULT)
 
-                # รอให้ไฟล์พร้อมอ่านเล็กน้อย
-                for _ in range(10):
-                    if out_video_path and os.path.exists(out_video_path) and os.path.getsize(out_video_path) > 0:
-                        break
-                    time.sleep(0.1)
+                # ส่งเฟรมเข้า ffmpeg เป็น RGB24
+                ff_stdin.write(cv2.cvtColor(plotted_bgr, cv2.COLOR_BGR2RGB).tobytes())
 
-                # ❗ Gradio v5: ส่ง “พาธไฟล์ (string)” ตรง ๆ ให้กับ gr.Video
-                return out_video_path, (out_csv_path if (want_csv and os.path.exists(out_csv_path)) else None), False
+                frame_idx += 1
+                if total == 0 and frame_idx > 2000:
+                    break
+
+            cap.release()
+            try:
+                ff_stdin.close()
+            except Exception:
+                pass
+            ff_proc.wait()
+
+            # รอให้ไฟล์พร้อมอ่านเล็กน้อย
+            for _ in range(20):
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                    break
+                time.sleep(0.1)
+
+            # คืน "ไฟล์วิดีโอ" เพียงอย่างเดียวตามที่ต้องการ
+            return out_path
 
         run_video_btn = gr.Button("ทำนายทั้งวิดีโอ")
         run_video_btn.click(
             fn=predict_video,
-            inputs=[in_vid, conf_v, show_index_v, frame_stride, save_csv, processing],
-            outputs=[out_vid, csv_download, processing],
+            inputs=[in_vid, conf_v, show_index_v, frame_stride],
+            outputs=[out_vid],
             queue=True,
         )
 
