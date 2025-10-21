@@ -21,5 +21,6 @@
 %cd /content/yolov8-pose-dog/Gradio
 !ls -la
 
+!sudo apt-get install -y fonts-thai-tlwg
 %pip install -q torch torchvision roboflow python-dotenv tqdm gradio opencv-python pillow numpy matplotlib ultralytics
 !python app_gradio.py --share
