@@ -19,6 +19,12 @@ CIRCLE_RADIUS = 2
 FONT_PATH_CANDIDATES = [
     r"C:\Windows\Fonts\angsana.ttc",
     r"C:\Windows\Fonts\angsanau.ttf",
+    r"/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+    r"/usr/share/fonts/truetype/tlwg/Loma.ttf",
+    r"/usr/share/fonts/truetype/tlwg/Kinnari.ttf",
+    r"/usr/share/fonts/truetype/tlwg/Norasi.ttf",
+    r"/usr/share/fonts/truetype/tlwg/Waree.ttf",
+    r"/usr/share/fonts/truetype/tlwg/Sawasdee.ttf",
 ]
 def _pick_font_path():
     for p in FONT_PATH_CANDIDATES:
@@ -214,3 +220,4 @@ def infer_frame_bgr(frame_bgr, conf: float, show_index: bool, min_kp_conf: float
             rows.append([int(pi), int(ki), name, round(float(x), 2), round(float(y), 2), round(float(conf_k), 3)])
 
     return plotted, rows
+
