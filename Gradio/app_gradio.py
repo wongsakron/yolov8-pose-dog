@@ -195,4 +195,5 @@ with gr.Blocks(title="Dog Pose (Thai Labels) – YOLO + Gradio") as app:
             queue=True,
         )
 
-app.queue().launch()
+app.queue().launch(share=True, debug=True)
+
