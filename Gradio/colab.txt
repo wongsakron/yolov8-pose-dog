@@ -1,0 +1,25 @@
+
+# เริ่มที่ /content
+%cd /content
+!rm -rf 
+
+# 1) สร้าง repo ว่าง
+!git init 
+%cd /content/
+
+# 2) ตั้งค่า remote และเปิดโหมด sparse checkout
+!git remote add origin https://github.com/wongsakron/yolov8-pose-dog.git
+!git config core.sparseCheckout true
+
+# 3) ระบุว่าเอาเฉพาะโฟลเดอร์ Gradio
+!echo "Gradio/" >> .git/info/sparse-checkout
+
+# 4) ดึงข้อมูลเฉพาะโฟลเดอร์นั้นจาก branch main
+!git pull origin main
+
+# 5) เข้าไปในโฟลเดอร์ Gradio และตรวจไฟล์
+%cd /content/yolov8-pose-dog/Gradio
+!ls -la
+
+%pip install -q torch torchvision roboflow python-dotenv tqdm gradio opencv-python pillow numpy matplotlib ultralytics
+!python app_gradio.py --share
